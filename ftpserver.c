@@ -85,6 +85,10 @@ int send_response(ftp_server *ft, int rc)
 
     switch (rc)
     {
+    case 1501:
+        snprintf(buff, sizeof(buff), "150 Ok to send data.\r\n");
+        break;
+
     case 220:
         snprintf(buff, sizeof(buff), "%d Welcome.\r\n", rc);
         break;
@@ -125,10 +129,10 @@ int send_response(ftp_server *ft, int rc)
         snprintf(buff, sizeof(buff), "%d Entering Passive Mode (%d,%d,%d,%d,%d,%d).\r\n", rc, (int)(inet_addr(ft->ip) & 0xff), (int)((inet_addr(ft->ip) >> 8) & 0xff), (int)((inet_addr(ft->ip) >> 16) & 0xff), (int)((inet_addr(ft->ip) >> 24) & 0xff), (int)(ft->data_port / 256), (int)(ft->data_port % 256));
         break;
 
-    case 150:
+    case 1502:
         fp = fopen((char *)ft->arg, "rb");
         fseek(fp, 0, SEEK_END);
-        snprintf(buff, sizeof(buff), "%d Opening BINARY mode data connection for %s (%ld bytes).\r\n", rc, (char *)ft->arg, ftell(fp));
+        snprintf(buff, sizeof(buff), "150 Opening BINARY mode data connection for %s (%ld bytes).\r\n", (char *)ft->arg, ftell(fp));
         fclose(fp);
         break;
 
@@ -157,7 +161,7 @@ int retr(ftp_server *ft, char *filename)
     else
     {
         ft->arg = filename;
-        send_response(ft, 150);
+        send_response(ft, 1502);
         do
         {
             num_read = fread(data, 1, MAXSIZE, fd);
@@ -214,9 +218,12 @@ int list(ftp_server *ft)
 static void *wait_data_sock(void *arg)
 {
     ftp_server *ft = (ftp_server *)arg;
-    if ((ft->sock_data = socket_accept(ft->sock_listen)) < 0)
+    while (1)
     {
-        printf("Error accept socket");
+        if ((ft->sock_data = socket_accept(ft->sock_listen)) < 0)
+        {
+            printf("Error accept socket");
+        }
     }
 }
 
@@ -261,6 +268,35 @@ int size(ftp_server *ft, char *filename)
     fclose(fp);
     ft->arg = &file_size;
     return send_response(ft, 213);
+}
+
+int stor(ftp_server *ft, char *filename)
+{
+    FILE *fp = fopen(filename, "wb");
+    if (fp == NULL)
+    {
+        perror("Error fopen");
+        exit(1);
+    }
+
+    send_response(ft, 1501);
+
+    char buf[MAXSIZE];
+    int nread;
+    while ((nread = recv_data(ft->sock_data, buf, MAXSIZE)) > 0)
+    {
+        fwrite(buf, 1, nread, fp);
+    }
+
+    if (nread == -1)
+    {
+        perror("Error recv");
+        exit(1);
+    }
+
+    fclose(fp);
+
+    return send_response(ft, 226);
 }
 
 int quit(ftp_server *ft)
@@ -387,6 +423,10 @@ int recv_cmd(ftp_server *ft)
     else if (strcmp(cmd, "RETR") == 0)
     {
         return retr(ft, arg);
+    }
+    else if (strcmp(cmd, "STOR") == 0)
+    {
+        return stor(ft, arg);
     }
     else if (strcmp(cmd, "LIST") == 0)
     {
