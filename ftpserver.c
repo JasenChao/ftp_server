@@ -301,6 +301,7 @@ int stor(ftp_server *ft, char *filename)
 
 int quit(ftp_server *ft)
 {
+    send_response(ft, 221);
     if (ft->sock_listen >= 0)
         close(ft->sock_listen);
     if (ft->sock_data >= 0)
@@ -410,6 +411,8 @@ int recv_cmd(ftp_server *ft)
 
     strncpy(cmd, buffer, 4);
     char *tmp = buffer + 5;
+    size_t pos = strcspn(tmp, "\r\n");
+    tmp[pos] = '\0';
     strcpy(arg, tmp);
 
     if (strcmp(cmd, "SIZE") == 0)
