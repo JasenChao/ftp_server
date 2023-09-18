@@ -13,22 +13,45 @@ int socket_create(int *port)
         return -1;
     }
 
-    sock_addr.sin_family = AF_INET;
-    sock_addr.sin_port = htons(*port);
-    sock_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1)
+    if (*port == 0)
     {
-        close(sockfd);
-        perror("setsockopt() error");
-        return -1;
+        for (int p = 9970; p < 9999; ++p) {
+            sock_addr.sin_family = AF_INET;
+            sock_addr.sin_port = htons(p);
+            sock_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+            if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1)
+            {
+                close(sockfd);
+                perror("setsockopt() error");
+                return -1;
+            }
+
+            if (bind(sockfd, (struct sockaddr *)&sock_addr, sizeof(sock_addr)) == 0)
+            {
+                break;
+            }
+        }
     }
-
-    if (bind(sockfd, (struct sockaddr *)&sock_addr, sizeof(sock_addr)) < 0)
+    else
     {
-        close(sockfd);
-        perror("bind() error");
-        return -1;
+        sock_addr.sin_family = AF_INET;
+        sock_addr.sin_port = htons(*port);
+        sock_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+        if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1)
+        {
+            close(sockfd);
+            perror("setsockopt() error");
+            return -1;
+        }
+
+        if (bind(sockfd, (struct sockaddr *)&sock_addr, sizeof(sock_addr)) < 0)
+        {
+            close(sockfd);
+            perror("bind() error");
+            return -1;
+        }
     }
 
     if (*port == 0)
