@@ -1,5 +1,8 @@
 #include "ftpserver.h"
 
+static int p = 9970;
+static pthread_mutex_t mutex;
+
 int socket_create(int *port)
 {
     int sockfd;
@@ -13,38 +16,39 @@ int socket_create(int *port)
         return -1;
     }
 
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1)
+    {
+        close(sockfd);
+        perror("setsockopt() error");
+        return -1;
+    }
+
     if (*port == 0)
     {
-        for (int p = 9970; p < 9999; ++p) {
+        
+        int pp = p;
+        
+        do
+        {
             sock_addr.sin_family = AF_INET;
             sock_addr.sin_port = htons(p);
             sock_addr.sin_addr.s_addr = htonl(INADDR_ANY);
 
-            if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1)
-            {
-                close(sockfd);
-                perror("setsockopt() error");
-                return -1;
-            }
-
             if (bind(sockfd, (struct sockaddr *)&sock_addr, sizeof(sock_addr)) == 0)
             {
+                *port = p++;
+                if (p == 9999) p = 9970;
                 break;
             }
-        }
+            if (++p == 9999) p = 9970;
+        } while (p != pp);
+        
     }
     else
     {
         sock_addr.sin_family = AF_INET;
         sock_addr.sin_port = htons(*port);
         sock_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-        if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1)
-        {
-            close(sockfd);
-            perror("setsockopt() error");
-            return -1;
-        }
 
         if (bind(sockfd, (struct sockaddr *)&sock_addr, sizeof(sock_addr)) < 0)
         {
@@ -54,18 +58,7 @@ int socket_create(int *port)
         }
     }
 
-    if (*port == 0)
-    {
-        if (getsockname(sockfd, (struct sockaddr *)&sock_addr, &addr_len) == -1)
-        {
-            close(sockfd);
-            perror("getsockname() error");
-            return -1;
-        }
-        *port = ntohs(sock_addr.sin_port);
-    }
-
-    if (listen(sockfd, 10) < 0)
+    if (listen(sockfd, 20) < 0)
     {
         close(sockfd);
         perror("listen() error");
@@ -93,6 +86,18 @@ int recv_data(int sockfd, char *buf, int bufsize)
 {
     size_t num_bytes;
     memset(buf, 0, bufsize);
+    fd_set readset;
+    struct timeval timeout;
+
+    timeout.tv_sec = 3;
+    timeout.tv_usec = 0;
+
+    FD_ZERO(&readset);
+    FD_SET(sockfd, &readset);
+
+    if (select(sockfd + 1, &readset, NULL, NULL, &timeout) <= 0) {
+        return 0;
+    }
 
     num_bytes = recv(sockfd, buf, bufsize, 0);
     if (num_bytes < 0)
@@ -173,6 +178,8 @@ int send_response(ftp_server *ft, int rc)
 
 int retr(ftp_server *ft, char *filename)
 {
+    pthread_mutex_lock(&mutex);
+    pthread_mutex_unlock(&mutex);
     FILE *fd = NULL;
     char data[MAXSIZE];
     size_t num_read;
@@ -185,18 +192,14 @@ int retr(ftp_server *ft, char *filename)
     {
         ft->arg = filename;
         send_response(ft, 1502);
-        do
+        while ((num_read = fread(data, 1, 128, fd)) > 0)
         {
-            num_read = fread(data, 1, MAXSIZE, fd);
-            if (num_read < 0)
-                printf("error in fread()\n");
-
             if (send(ft->sock_data, data, num_read, 0) < 0)
                 printf("error sending file\n");
-
-        } while (num_read > 0);
+        }
 
         fclose(fd);
+        close(ft->sock_data);
 
         return send_response(ft, 226);
     }
@@ -204,6 +207,8 @@ int retr(ftp_server *ft, char *filename)
 
 int list(ftp_server *ft)
 {
+    pthread_mutex_lock(&mutex);
+    pthread_mutex_unlock(&mutex);
     char data[MAXSIZE];
     size_t num_read;
     FILE *fd;
@@ -238,16 +243,14 @@ int list(ftp_server *ft)
     return 0;
 }
 
-static void *wait_data_sock(void *arg)
+void *wait_data_sock(void *arg)
 {
     ftp_server *ft = (ftp_server *)arg;
-    while (1)
+    if ((ft->sock_data = socket_accept(ft->sock_listen)) < 0)
     {
-        if ((ft->sock_data = socket_accept(ft->sock_listen)) < 0)
-        {
-            printf("Error accept socket");
-        }
+        printf("Error accept socket");
     }
+    pthread_mutex_unlock(&mutex);
 }
 
 int pasv(ftp_server *ft)
@@ -265,6 +268,7 @@ int pasv(ftp_server *ft)
         pthread_cancel(ft->tid);
         pthread_join(ft->tid, NULL);
     }
+    pthread_mutex_lock(&mutex);
     int port = 0;
     if ((ft->sock_listen = socket_create(&port)) < 0)
     {
@@ -274,6 +278,7 @@ int pasv(ftp_server *ft)
     ft->data_port = port;
 
     pthread_create(&ft->tid, NULL, wait_data_sock, ft);
+    sleep(1);
 
     return send_response(ft, 227);
 }
@@ -295,6 +300,8 @@ int size(ftp_server *ft, char *filename)
 
 int stor(ftp_server *ft, char *filename)
 {
+    pthread_mutex_lock(&mutex);
+    pthread_mutex_unlock(&mutex);
     FILE *fp = fopen(filename, "wb");
     if (fp == NULL)
     {
@@ -314,7 +321,6 @@ int stor(ftp_server *ft, char *filename)
     if (nread == -1)
     {
         perror("Error recv");
-        exit(1);
     }
 
     fclose(fp);
@@ -512,6 +518,11 @@ int main(int argc, char *argv[])
         exit(0);
     }
 
+    if (pthread_mutex_init(&mutex, NULL) != 0) {
+        printf("Mutex initialization failed.\n");
+        return 1;
+    }
+
     port = atoi(argv[1]);
 
     if ((sock_listen = socket_create(&port)) < 0)
@@ -540,6 +551,7 @@ int main(int argc, char *argv[])
     }
 
     close(sock_listen);
+    pthread_mutex_destroy(&mutex);
 
     return 0;
 }
